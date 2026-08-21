@@ -4,12 +4,18 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROMPT_PATH = path.join(__dirname, "..", "..", "prompts", "maintenance-triage-v1.md");
+const PROMPT_PATH = path.join(
+  __dirname,
+  "..",
+  "..",
+  "prompts",
+  "maintenance-triage-v1.md"
+);
+
 const PROMPT_VERSION = "maintenance-triage-v1";
 
-// A fixed, schema-valid stub response. Used when LLM_STUB=1 so the route,
-// validation, and policy logic can all be tested with zero model calls and
-// zero spend.
+// Valid response used by the normal stub case and as the repaired
+// response for controlled Stage 3 tests.
 const STUB_RESPONSE = {
   equipment_type: "ventilator",
   issue_type: "alarm_fault",
@@ -27,9 +33,10 @@ function getClient() {
     client = new OpenAI({
       baseURL: process.env.LLM_BASE_URL,
       apiKey: process.env.LLM_API_KEY,
-      timeout: 15_000, // 15s, not the SDK's 10-minute default. Retry policy comes in Stage 4.
+      timeout: 15_000,
     });
   }
+
   return client;
 }
 
@@ -37,43 +44,162 @@ function getSystemPrompt() {
   if (!systemPrompt) {
     systemPrompt = readFileSync(PROMPT_PATH, "utf-8");
   }
+
   return systemPrompt;
 }
 
 /**
- * Strips a leading ```json / trailing ``` fence if the model added one,
- * and returns the raw text otherwise. Does not attempt JSON.parse here;
- * that happens one layer up so parse failures can feed the Stage 3
- * repair-retry path instead of throwing here.
+ * Remove a surrounding JSON code fence if the model returns one.
  */
 function stripCodeFence(text) {
   const trimmed = text.trim();
-  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  return fenceMatch ? fenceMatch[1] : trimmed;
+
+  const fenceMatch = trimmed.match(
+    /^```(?:json)?\s*([\s\S]*?)\s*```$/i
+  );
+
+  return fenceMatch ? fenceMatch[1].trim() : trimmed;
 }
 
 /**
- * Calls the model (or returns the stub) and returns the raw text content,
- * fence-stripped but NOT yet JSON.parsed or schema-validated. The caller
- * (the route, in Stage 1/2; the repair loop, from Stage 3 on) is
- * responsible for parsing and validating.
+ * Return the controlled initial stub response for Stage 3 testing.
  *
- * @param {string} text - the user-submitted maintenance report
- * @returns {Promise<string>} raw JSON text
+ * LLM_STUB_CASE is only used when LLM_STUB=1.
+ */
+function getStubInitialResponse() {
+  const testCase = process.env.LLM_STUB_CASE || "valid";
+
+  switch (testCase) {
+    case "valid":
+      return JSON.stringify(STUB_RESPONSE);
+
+    case "fenced":
+      return [
+        "```json",
+        JSON.stringify(STUB_RESPONSE, null, 2),
+        "```",
+      ].join("\n");
+
+    case "malformed":
+      return '{"equipment_type":"ventilator","issue_type":';
+
+    case "invalid_enum":
+      return JSON.stringify({
+        ...STUB_RESPONSE,
+        equipment_type: "syringe_pump",
+      });
+
+    case "extra_field":
+      return JSON.stringify({
+        ...STUB_RESPONSE,
+        patient_risk: "critical",
+      });
+
+    case "repair_invalid":
+      return '{"equipment_type":"ventilator","issue_type":';
+
+    default:
+      throw new Error(
+        `Unknown LLM_STUB_CASE: ${testCase}`
+      );
+  }
+}
+
+/**
+ * Return the controlled repair response for Stage 3 testing.
+ *
+ * All repair cases except repair_invalid return valid schema output.
+ */
+function getStubRepairResponse() {
+  const testCase = process.env.LLM_STUB_CASE || "valid";
+
+  if (testCase === "repair_invalid") {
+    return '{"equipment_type":"ventilator","urgency":';
+  }
+
+  return JSON.stringify({
+    ...STUB_RESPONSE,
+    confidence: 0.9,
+    reason: "Repaired stub response: valid maintenance triage output.",
+  });
+}
+
+/**
+ * Calls the model or returns a deterministic stub response.
+ *
+ * Returns raw text. Parsing and schema validation belong to parser.js.
  */
 export async function classifyMaintenanceReport(text) {
   if (process.env.LLM_STUB === "1") {
-    return JSON.stringify(STUB_RESPONSE);
+    return getStubInitialResponse();
   }
 
   const res = await getClient().chat.completions.create({
     model: process.env.LLM_MODEL,
-    temperature: 0, // classification, not creativity; same input should give the same shape
+    temperature: 0,
     messages: [
-      { role: "system", content: getSystemPrompt() },
-      // The report is untrusted content and stays in its own user message,
-      // never concatenated into the system prompt. See prompts/maintenance-triage-v1.md.
-      { role: "user", content: text },
+      {
+        role: "system",
+        content: getSystemPrompt(),
+      },
+      {
+        // Untrusted maintenance report remains separate from the
+        // system prompt.
+        role: "user",
+        content: text,
+      },
+    ],
+  });
+
+  return stripCodeFence(res.choices[0].message.content);
+}
+
+/**
+ * Makes exactly one repair attempt after the initial model output
+ * fails parsing or schema validation.
+ *
+ * In stub mode, returns a deterministic controlled response so
+ * Stage 3 can be tested without spending model quota.
+ */
+export async function repairMaintenanceReport({
+  input,
+  invalidOutput,
+  validationError,
+}) {
+  if (process.env.LLM_STUB === "1") {
+    return getStubRepairResponse();
+  }
+
+  const repairMessage = [
+    "Your previous response failed the application's output validation.",
+    "Return ONLY one corrected JSON object matching the maintenance-triage schema.",
+    "Do not add fields.",
+    "Do not return Markdown, code fences, or explanatory text.",
+    "",
+    "Validation error:",
+    JSON.stringify(validationError),
+  ].join("\n");
+
+  const res = await getClient().chat.completions.create({
+    model: process.env.LLM_MODEL,
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content: getSystemPrompt(),
+      },
+      {
+        role: "user",
+        content: input,
+      },
+      {
+        role: "assistant",
+        content: invalidOutput,
+      },
+      {
+        role: "user",
+        content: repairMessage,
+      },
     ],
   });
 

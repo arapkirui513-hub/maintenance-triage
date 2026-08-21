@@ -47,7 +47,7 @@ export const ModelOutputSchema = z.object({
   assigned_team: z.enum(ASSIGNED_TEAMS),
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1).max(300),
-});
+}).strict();
 
 // Input validation, checked before any model call is made.
 export const InputSchema = z.object({
