@@ -1,0 +1,16 @@
+{
+  "name": "maintenance-triage",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "POST /maintenance-triage - classifies biomedical equipment maintenance reports into a validated routing decision.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "hello": "node --env-file=.env src/llm/hello.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "openai": "^4.55.0",
+    "zod": "^3.23.8"
+  }
+}
