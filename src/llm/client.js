@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { withTransportRetry } from "./retry.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const PROMPT_PATH = path.join(
   __dirname,
   "..",
@@ -99,9 +102,7 @@ function getStubInitialResponse() {
       return '{"equipment_type":"ventilator","issue_type":';
 
     default:
-      throw new Error(
-        `Unknown LLM_STUB_CASE: ${testCase}`
-      );
+      throw new Error(`Unknown LLM_STUB_CASE: ${testCase}`);
   }
 }
 
@@ -127,6 +128,8 @@ function getStubRepairResponse() {
 /**
  * Calls the model or returns a deterministic stub response.
  *
+ * Real model calls are wrapped by the transport retry layer.
+ *
  * Returns raw text. Parsing and schema validation belong to parser.js.
  */
 export async function classifyMaintenanceReport(text) {
@@ -134,29 +137,39 @@ export async function classifyMaintenanceReport(text) {
     return getStubInitialResponse();
   }
 
-  const res = await getClient().chat.completions.create({
-    model: process.env.LLM_MODEL,
-    temperature: 0,
-    messages: [
-      {
-        role: "system",
-        content: getSystemPrompt(),
-      },
-      {
-        // Untrusted maintenance report remains separate from the
-        // system prompt.
-        role: "user",
-        content: text,
-      },
-    ],
-  });
+  const rawResponse = await withTransportRetry(
+    async () => {
+      return getClient().chat.completions.create({
+        model: process.env.LLM_MODEL,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: getSystemPrompt(),
+          },
+          {
+            // Untrusted maintenance report remains separate from
+            // the system prompt.
+            role: "user",
+            content: text,
+          },
+        ],
+      });
+    },
+    {
+      callType: "initial",
+    }
+  );
 
-  return stripCodeFence(res.choices[0].message.content);
+  return stripCodeFence(rawResponse.choices[0].message.content);
 }
 
 /**
  * Makes exactly one repair attempt after the initial model output
  * fails parsing or schema validation.
+ *
+ * Transport failures inside this one repair attempt may be retried
+ * by retry.js, but parser.js still controls the maximum repair count.
  *
  * In stub mode, returns a deterministic controlled response so
  * Stage 3 can be tested without spending model quota.
@@ -180,30 +193,37 @@ export async function repairMaintenanceReport({
     JSON.stringify(validationError),
   ].join("\n");
 
-  const res = await getClient().chat.completions.create({
-    model: process.env.LLM_MODEL,
-    temperature: 0,
-    messages: [
-      {
-        role: "system",
-        content: getSystemPrompt(),
-      },
-      {
-        role: "user",
-        content: input,
-      },
-      {
-        role: "assistant",
-        content: invalidOutput,
-      },
-      {
-        role: "user",
-        content: repairMessage,
-      },
-    ],
-  });
+  const rawResponse = await withTransportRetry(
+    async () => {
+      return getClient().chat.completions.create({
+        model: process.env.LLM_MODEL,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: getSystemPrompt(),
+          },
+          {
+            role: "user",
+            content: input,
+          },
+          {
+            role: "assistant",
+            content: invalidOutput,
+          },
+          {
+            role: "user",
+            content: repairMessage,
+          },
+        ],
+      });
+    },
+    {
+      callType: "repair",
+    }
+  );
 
-  return stripCodeFence(res.choices[0].message.content);
+  return stripCodeFence(rawResponse.choices[0].message.content);
 }
 
 export { PROMPT_VERSION };
