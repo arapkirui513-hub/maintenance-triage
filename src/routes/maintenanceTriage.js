@@ -82,12 +82,21 @@ function mapTransportError(error) {
         },
       };
 
-    default:
+    case "network_error":
       return {
         status: 502,
         body: {
           error: "model_transport_error",
           message: "The model provider could not be reached.",
+        },
+      };
+
+    default:
+      return {
+        status: 502,
+        body: {
+          error: "model_transport_error",
+          message: "The model provider request failed.",
         },
       };
   }
@@ -123,16 +132,14 @@ router.post("/maintenance-triage", async (req, res) => {
     const result = await withWorkflowDeadline(
       (async () => {
         // 3. Initial model call.
-        const rawText = await classifyMaintenanceReport(text);
+        const initialOutput = await classifyMaintenanceReport(text);
 
         // 4. Parse and validate the model output.
         //    parser.js gets exactly one repair attempt if needed.
-        const parsedResult = await parseAndRepair({
+        return parseAndRepair({
           input: text,
-          initialOutput: rawText,
+          initialOutput,
         });
-
-        return parsedResult;
       })()
     );
 
@@ -142,6 +149,7 @@ router.post("/maintenance-triage", async (req, res) => {
         error: "invalid_model_output",
         message:
           "Model output could not be validated after one repair attempt.",
+        stage: result.stage,
         repair_count: result.repairCount,
       });
     }

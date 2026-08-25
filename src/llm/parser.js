@@ -7,6 +7,7 @@ import {
 
 function stripCodeFence(text) {
   const trimmed = text.trim();
+
   const fenceMatch = trimmed.match(
     /^```(?:json)?\s*([\s\S]*?)\s*```$/i
   );
@@ -43,20 +44,6 @@ function parseAndValidate(rawText) {
   };
 }
 
-function buildRepairMessage({ originalOutput, validationError }) {
-  return [
-    "Your previous response could not be accepted by the application's output validator.",
-    "Return ONLY one corrected JSON object matching the required maintenance-triage schema.",
-    "Do not add fields. Do not include Markdown or explanatory text.",
-    "",
-    "Validation error:",
-    JSON.stringify(validationError),
-    "",
-    "Previous response:",
-    originalOutput,
-  ].join("\n");
-}
-
 export async function parseAndRepair({
   input,
   initialOutput,
@@ -71,34 +58,15 @@ export async function parseAndRepair({
     };
   }
 
-  let repairOutput = null;
   const repairCount = 1;
 
-  try {
-    repairOutput = await repairMaintenanceReport({
-      input,
-      invalidOutput: initialOutput,
-      validationError: firstResult.error,
-    });
-  } catch (error) {
-    quarantineFailure({
-      input,
-      promptVersion: PROMPT_VERSION,
-      originalOutput: initialOutput,
-      repairOutput: null,
-      validationError: error instanceof Error
-        ? error.message
-        : String(error),
-      repairCount,
-    });
-
-    return {
-      success: false,
-      stage: "repair_call",
-      error: error instanceof Error ? error.message : String(error),
-      repairCount,
-    };
-  }
+  // TransportError is deliberately allowed to propagate.
+  // The route owns transport-error-to-HTTP mapping.
+  const repairOutput = await repairMaintenanceReport({
+    input,
+    invalidOutput: initialOutput,
+    validationError: firstResult.error,
+  });
 
   const repairedResult = parseAndValidate(repairOutput);
 
@@ -110,6 +78,9 @@ export async function parseAndRepair({
     };
   }
 
+  // Quarantine represents model-output/content failures only.
+  // A repair transport failure never reaches this point because it
+  // propagates to the route.
   quarantineFailure({
     input,
     promptVersion: PROMPT_VERSION,

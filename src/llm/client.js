@@ -52,19 +52,6 @@ function getSystemPrompt() {
 }
 
 /**
- * Remove a surrounding JSON code fence if the model returns one.
- */
-function stripCodeFence(text) {
-  const trimmed = text.trim();
-
-  const fenceMatch = trimmed.match(
-    /^```(?:json)?\s*([\s\S]*?)\s*```$/i
-  );
-
-  return fenceMatch ? fenceMatch[1].trim() : trimmed;
-}
-
-/**
  * Return the controlled initial stub response for Stage 3 testing.
  *
  * LLM_STUB_CASE is only used when LLM_STUB=1.
@@ -130,7 +117,9 @@ function getStubRepairResponse() {
  *
  * Real model calls are wrapped by the transport retry layer.
  *
- * Returns raw text. Parsing and schema validation belong to parser.js.
+ * Returns raw model text.
+ *
+ * Parsing, code-fence handling, and schema validation belong to parser.js.
  */
 export async function classifyMaintenanceReport(text) {
   if (process.env.LLM_STUB === "1") {
@@ -161,7 +150,7 @@ export async function classifyMaintenanceReport(text) {
     }
   );
 
-  return stripCodeFence(rawResponse.choices[0].message.content);
+  return rawResponse.choices[0].message.content;
 }
 
 /**
@@ -173,6 +162,10 @@ export async function classifyMaintenanceReport(text) {
  *
  * In stub mode, returns a deterministic controlled response so
  * Stage 3 can be tested without spending model quota.
+ *
+ * Returns raw model text.
+ *
+ * Parsing, code-fence handling, and schema validation belong to parser.js.
  */
 export async function repairMaintenanceReport({
   input,
@@ -223,7 +216,7 @@ export async function repairMaintenanceReport({
     }
   );
 
-  return stripCodeFence(rawResponse.choices[0].message.content);
+  return rawResponse.choices[0].message.content;
 }
 
 export { PROMPT_VERSION };
