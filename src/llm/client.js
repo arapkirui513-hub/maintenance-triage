@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { withTransportRetry } from "./retry.js";
+import { logModelCompletion } from "./costLog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -113,6 +114,19 @@ function getStubRepairResponse() {
 }
 
 /**
+ * Extract token usage from an OpenAI-compatible response.
+ *
+ * Different providers may omit usage, so missing values remain null
+ * rather than being fabricated.
+ */
+function getUsage(rawResponse) {
+  return {
+    inputTokens: rawResponse?.usage?.prompt_tokens ?? null,
+    outputTokens: rawResponse?.usage?.completion_tokens ?? null,
+  };
+}
+
+/**
  * Calls the model or returns a deterministic stub response.
  *
  * Real model calls are wrapped by the transport retry layer.
@@ -125,6 +139,8 @@ export async function classifyMaintenanceReport(text) {
   if (process.env.LLM_STUB === "1") {
     return getStubInitialResponse();
   }
+
+  const startedAt = Date.now();
 
   const rawResponse = await withTransportRetry(
     async () => {
@@ -149,6 +165,17 @@ export async function classifyMaintenanceReport(text) {
       callType: "initial",
     }
   );
+
+  const durationMs = Date.now() - startedAt;
+  const usage = getUsage(rawResponse);
+
+  logModelCompletion({
+    callType: "initial",
+    model: rawResponse?.model ?? process.env.LLM_MODEL ?? "unknown",
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    durationMs,
+  });
 
   return rawResponse.choices[0].message.content;
 }
@@ -186,6 +213,8 @@ export async function repairMaintenanceReport({
     JSON.stringify(validationError),
   ].join("\n");
 
+  const startedAt = Date.now();
+
   const rawResponse = await withTransportRetry(
     async () => {
       return getClient().chat.completions.create({
@@ -215,6 +244,17 @@ export async function repairMaintenanceReport({
       callType: "repair",
     }
   );
+
+  const durationMs = Date.now() - startedAt;
+  const usage = getUsage(rawResponse);
+
+  logModelCompletion({
+    callType: "repair",
+    model: rawResponse?.model ?? process.env.LLM_MODEL ?? "unknown",
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    durationMs,
+  });
 
   return rawResponse.choices[0].message.content;
 }
