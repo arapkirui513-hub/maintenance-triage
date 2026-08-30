@@ -135,7 +135,7 @@ function getUsage(rawResponse) {
  *
  * Parsing, code-fence handling, and schema validation belong to parser.js.
  */
-export async function classifyMaintenanceReport(text) {
+export async function classifyMaintenanceReport(text, { signal } = {}) {
   if (process.env.LLM_STUB === "1") {
     return getStubInitialResponse();
   }
@@ -144,25 +144,29 @@ export async function classifyMaintenanceReport(text) {
 
   const rawResponse = await withTransportRetry(
     async () => {
-      return getClient().chat.completions.create({
-        model: process.env.LLM_MODEL,
-        temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content: getSystemPrompt(),
-          },
-          {
-            // Untrusted maintenance report remains separate from
-            // the system prompt.
-            role: "user",
-            content: text,
-          },
-        ],
-      });
+      return getClient().chat.completions.create(
+        {
+          model: process.env.LLM_MODEL,
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content: getSystemPrompt(),
+            },
+            {
+              // Untrusted maintenance report remains separate from
+              // the system prompt.
+              role: "user",
+              content: text,
+            },
+          ],
+        },
+        { signal }
+      );
     },
     {
       callType: "initial",
+      signal,
     }
   );
 
@@ -198,6 +202,7 @@ export async function repairMaintenanceReport({
   input,
   invalidOutput,
   validationError,
+  signal,
 }) {
   if (process.env.LLM_STUB === "1") {
     return getStubRepairResponse();
@@ -217,31 +222,35 @@ export async function repairMaintenanceReport({
 
   const rawResponse = await withTransportRetry(
     async () => {
-      return getClient().chat.completions.create({
-        model: process.env.LLM_MODEL,
-        temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content: getSystemPrompt(),
-          },
-          {
-            role: "user",
-            content: input,
-          },
-          {
-            role: "assistant",
-            content: invalidOutput,
-          },
-          {
-            role: "user",
-            content: repairMessage,
-          },
-        ],
-      });
+      return getClient().chat.completions.create(
+        {
+          model: process.env.LLM_MODEL,
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content: getSystemPrompt(),
+            },
+            {
+              role: "user",
+              content: input,
+            },
+            {
+              role: "assistant",
+              content: invalidOutput,
+            },
+            {
+              role: "user",
+              content: repairMessage,
+            },
+          ],
+        },
+        { signal }
+      );
     },
     {
       callType: "repair",
+      signal,
     }
   );
 

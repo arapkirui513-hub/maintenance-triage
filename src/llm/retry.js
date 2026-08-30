@@ -140,9 +140,31 @@ function getBackoffMs(retryNumber, retryAfterMs, random = Math.random) {
   return baseDelay + jitter;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+/**
+ * Sleep for `ms` milliseconds, or reject immediately if `signal` fires
+ * before the delay completes.
+ *
+ * Without this, a caller cancellation (e.g. the workflow deadline) would
+ * only take effect after the current backoff finishes, up to ~2.25s of
+ * avoidable delay with the current BACKOFF_DELAYS_MS + jitter.
+ */
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Aborted"));
+      return;
+    }
+
+    const timer = setTimeout(resolve, ms);
+
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error("Aborted"));
+      },
+      { once: true }
+    );
   });
 }
 
@@ -152,12 +174,20 @@ function sleep(ms) {
  * This layer knows only about transport failures.
  * It does not know about JSON, Zod, model-output repair, or HTTP routing.
  *
+ * Caller cancellation (via `signal`) always takes precedence over normal
+ * transport-error classification: if the signal has fired, the operation
+ * is not retried regardless of what kind of error came back. This keeps
+ * isTimeoutError()/classifyError() scoped to "what kind of transport
+ * failure is this?" and leaves "should this attempt continue?" to this
+ * function.
+ *
  * @param {Function} operation
  * @param {Object} options
  * @param {number} options.maxRetries
  * @param {Function} options.sleepFn
  * @param {Function} options.random
  * @param {string} options.callType
+ * @param {AbortSignal} [options.signal]
  * @returns {Promise<*>}
  */
 export async function withTransportRetry(
@@ -167,6 +197,7 @@ export async function withTransportRetry(
     sleepFn = sleep,
     random = Math.random,
     callType = "unknown",
+    signal,
   } = {}
 ) {
   let retryCount = 0;
@@ -187,6 +218,23 @@ export async function withTransportRetry(
         callType,
       });
     } catch (error) {
+      // Caller cancellation always wins, before normal classification.
+      // A cancelled attempt is never retried, regardless of what shape
+      // the resulting error happens to take.
+      if (signal?.aborted) {
+        throw new TransportError({
+          message:
+            error instanceof Error ? error.message : String(error),
+          kind: "cancelled",
+          status: null,
+          retryable: false,
+          attempts: retryCount + 1,
+          retryCount,
+          retryAfterMs: null,
+          cause: error,
+        });
+      }
+
       const classification = classifyError(error);
       const status = classification.status;
 
@@ -216,7 +264,27 @@ export async function withTransportRetry(
         random
       );
 
-      await sleepFn(delayMs);
+      try {
+        await sleepFn(delayMs, signal);
+      } catch (sleepError) {
+        // The backoff itself was interrupted by cancellation. Throw the
+        // same TransportError shape as an in-flight-operation abort, so
+        // callers (and mapTransportError in the route) have one
+        // consistent contract regardless of *when* the abort landed.
+        throw new TransportError({
+          message:
+            sleepError instanceof Error
+              ? sleepError.message
+              : String(sleepError),
+          kind: "cancelled",
+          status: null,
+          retryable: false,
+          attempts: retryCount,
+          retryCount,
+          retryAfterMs: null,
+          cause: sleepError,
+        });
+      }
     }
   }
 }

@@ -47,6 +47,7 @@ function parseAndValidate(rawText) {
 export async function parseAndRepair({
   input,
   initialOutput,
+  signal,
 }) {
   const firstResult = parseAndValidate(initialOutput);
 
@@ -66,6 +67,7 @@ export async function parseAndRepair({
     input,
     invalidOutput: initialOutput,
     validationError: firstResult.error,
+    signal,
   });
 
   const repairedResult = parseAndValidate(repairOutput);

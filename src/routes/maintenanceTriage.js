@@ -17,14 +17,35 @@ class WorkflowDeadlineError extends Error {
   }
 }
 
-function withWorkflowDeadline(promise, timeoutMs = WORKFLOW_DEADLINE_MS) {
+/**
+ * Runs `promiseFactory(signal)` under a workflow-level deadline.
+ *
+ * Previously this raced a promise against a timeout without ever
+ * cancelling the underlying work: when the deadline won, the route moved
+ * on but the in-flight model request (and any retries) kept running in
+ * the background, still consuming API spend after the caller had already
+ * been told the workflow gave up.
+ *
+ * Now the deadline owns an AbortController. When it fires, it both
+ * rejects with WorkflowDeadlineError (the route's public 504 contract)
+ * AND aborts the signal, which propagates down through client.js and
+ * retry.js to actually stop the request.
+ *
+ * `promiseFactory` receives the signal so the caller can thread it into
+ * the operation before starting it.
+ */
+function withWorkflowDeadline(promiseFactory, timeoutMs = WORKFLOW_DEADLINE_MS) {
+  const controller = new AbortController();
   let timer;
 
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      controller.abort();
       reject(new WorkflowDeadlineError());
     }, timeoutMs);
   });
+
+  const promise = promiseFactory(controller.signal);
 
   return Promise.race([promise, timeout]).finally(() => {
     clearTimeout(timer);
@@ -37,6 +58,21 @@ function mapTransportError(error) {
   }
 
   switch (error.kind) {
+    // Defensive: WorkflowDeadlineError is the intended, normal path for a
+    // deadline hit (its rejection is synchronous and wins the race before
+    // the aborted operation's rejection propagates back up). This case
+    // only matters if that ordering is ever violated, so the caller still
+    // gets a coherent 504 instead of a generic transport-error response.
+    case "cancelled":
+      return {
+        status: 504,
+        body: {
+          error: "workflow_timeout",
+          message:
+            "The maintenance triage workflow exceeded the 60 second deadline.",
+        },
+      };
+
     case "timeout":
       return {
         status: 504,
@@ -129,16 +165,19 @@ router.post("/maintenance-triage", async (req, res) => {
   const { text } = inputResult.data;
 
   try {
-    const result = await withWorkflowDeadline(
+    const result = await withWorkflowDeadline((signal) =>
       (async () => {
         // 3. Initial model call.
-        const initialOutput = await classifyMaintenanceReport(text);
+        const initialOutput = await classifyMaintenanceReport(text, {
+          signal,
+        });
 
         // 4. Parse and validate the model output.
         //    parser.js gets exactly one repair attempt if needed.
         return parseAndRepair({
           input: text,
           initialOutput,
+          signal,
         });
       })()
     );

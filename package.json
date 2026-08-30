@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node --env-file=.env src/index.js",
     "hello": "node --env-file=.env src/llm/hello.js",
-    "test": "node --test test/retry.test.js"
+    "test": "node --test test/retry.test.js test/cancellation.test.js"
   },
   "dependencies": {
     "express": "^4.19.2",
