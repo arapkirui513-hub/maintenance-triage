@@ -1,4 +1,5 @@
 import { logModelAttempt } from "./costLog.js";
+import { APIConnectionTimeoutError, APIUserAbortError } from "openai";
 
 const MAX_RETRIES = 2;
 const BACKOFF_DELAYS_MS = [1000, 2000];
@@ -29,6 +30,8 @@ export class TransportError extends Error {
 
 function isTimeoutError(error) {
   return (
+    error instanceof APIConnectionTimeoutError ||
+    error instanceof APIUserAbortError ||
     error?.name === "AbortError" ||
     error?.name === "TimeoutError" ||
     error?.code === "ETIMEDOUT" ||
