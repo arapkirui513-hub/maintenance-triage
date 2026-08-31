@@ -465,13 +465,11 @@ Prompt version: maintenance-triage-v1
 
 The implementation is intentionally bounded, but these areas would be worth improving with another day of engineering work:
 
-1. **Timeout error-shape verification:** timeout classification has been tested against controlled error shapes but has not been exhaustively verified against every timeout error shape produced by the pinned provider SDK.
+1. **Provider-specific error behaviour:** timeout and cancellation handling has been verified against the relevant OpenAI SDK error classes and native AbortController/DOMException shapes used by the implementation. Provider-specific behaviour outside these tested shapes may still require additional verification.
 
-2. **Deadline cancellation:** the 60-second workflow deadline bounds the HTTP response path, but `Promise.race` does not cancel underlying in-flight model work. A request that hits the deadline returns a clean `504` to the caller, but the initial call, its retries, and a possible repair call keep running in the background and keep consuming provider quota for a request the caller already gave up on. A future implementation should thread an `AbortSignal` down into the client so the deadline can actually cancel in-flight work, not just bound response latency.
+2. **Provider-specific dollar accounting:** completion logging captures model, token usage and duration, but it does not calculate provider-specific dollar cost for paid models. Cost estimation for a non-free deployment remains an external calculation based on the applicable model's pricing.
 
-3. **Provider-specific dollar accounting:** completion logging captures model, token usage and duration, but it does not calculate provider-specific dollar cost for paid models. Cost estimation for a non-free deployment remains an external calculation based on the applicable model's pricing.
-
-4. **Run-to-run variance on `openrouter/free`:** because the free router selects among different underlying models per request, the eval score and exact wording can vary between runs even at temperature 0. A pinned model would remove this variable but would also remove the zero-cost testing this project relies on.
+3. **Run-to-run variance on `openrouter/free`:** because the free router selects among different underlying models per request, the eval score and exact wording can vary between runs even at temperature 0. A pinned model would remove this variable but would also remove the zero-cost testing this project relies on.
 
 These limitations are documented rather than hidden.
 
