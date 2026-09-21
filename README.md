@@ -1,5 +1,7 @@
 # maintenance-triage
 
+> **Status:** Active
+
 A bounded LLM workflow that classifies messy biomedical equipment maintenance reports into a controlled routing schema for hospital operations.
 
 It identifies:
